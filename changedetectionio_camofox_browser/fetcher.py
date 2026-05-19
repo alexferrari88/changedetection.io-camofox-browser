@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 import os
 import re
@@ -22,11 +21,12 @@ DEFAULT_USER_ID = os.getenv("CAMOFOX_BROWSER_USER_ID", "changedetectionio")
 def register_content_fetcher():
     """Register a changedetection.io fetcher backed by jo-inc/camofox-browser.
 
-    The name intentionally starts with ``extra_browser_``. changedetection.io 0.55.x
-    accepts that prefix in its API schema, so watches can be created/updated via API
-    without patching changedetection.io itself.
+    Imports from ``changedetectionio.content_fetchers`` are intentionally deferred
+    until this hook runs. changedetection.io discovers entry points while
+    ``content_fetchers`` is partially initialised, so importing it at module load
+    time creates a circular import.
     """
-    return (FETCHER_NAME, fetcher)
+    return (FETCHER_NAME, _build_fetcher_class())
 
 
 @dataclass
@@ -112,230 +112,229 @@ class _CamofoxClient:
         self._request("POST", f"/tabs/{tab_id}/wait", {"userId": self.user_id, "timeout": ms})
 
 
-# Imported lazily in the hook would be cleaner, but changedetection.io expects the
-# returned class to already exist. Keep changedetection imports at module import time
-# because this module is only loaded inside changedetection.io.
-from changedetectionio.content_fetchers import (  # noqa: E402
-    FAVICON_FETCHER_JS,
-    INSTOCK_DATA_JS,
-    SCREENSHOT_MAX_HEIGHT_DEFAULT,
-    XPATH_ELEMENT_JS,
-    visualselector_xpath_selectors,
-)
-from changedetectionio.content_fetchers.base import Fetcher  # noqa: E402
-from changedetectionio.content_fetchers.exceptions import EmptyReply, PageUnloadable  # noqa: E402
+def _build_fetcher_class():
+    from changedetectionio.content_fetchers import (
+        FAVICON_FETCHER_JS,
+        INSTOCK_DATA_JS,
+        SCREENSHOT_MAX_HEIGHT_DEFAULT,
+        XPATH_ELEMENT_JS,
+        visualselector_xpath_selectors,
+    )
+    from changedetectionio.content_fetchers.base import Fetcher
+    from changedetectionio.content_fetchers.exceptions import EmptyReply, PageUnloadable
 
+    class CamofoxBrowserFetcher(Fetcher):
+        fetcher_description = "Camofox Browser REST (Camoufox/Firefox stealth)"
+        supports_browser_steps = True
+        supports_screenshots = True
+        supports_xpath_element_data = True
 
-class fetcher(Fetcher):
-    fetcher_description = "Camofox Browser REST (Camoufox/Firefox stealth)"
-    supports_browser_steps = True
-    supports_screenshots = True
-    supports_xpath_element_data = True
-
-    def __init__(self, proxy_override=None, custom_browser_connection_url=None, **kwargs):
-        super().__init__(**kwargs)
-        base_url = custom_browser_connection_url or os.getenv("CAMOFOX_BROWSER_URL", "http://camofox-browser:9377")
-        self.client = _CamofoxClient(
-            base_url=base_url,
-            user_id=os.getenv("CAMOFOX_BROWSER_USER_ID", DEFAULT_USER_ID),
-            timeout=int(os.getenv("CAMOFOX_BROWSER_TIMEOUT", "120")),
-        )
-        self.tab_id: Optional[str] = None
-        self.watch_uuid: Optional[str] = None
-
-        if proxy_override:
-            logger.warning(
-                "Per-watch proxy override is not passed through by this plugin yet; "
-                "configure proxy on the camofox-browser service instead."
+        def __init__(self, proxy_override=None, custom_browser_connection_url=None, **kwargs):
+            super().__init__(**kwargs)
+            base_url = custom_browser_connection_url or os.getenv("CAMOFOX_BROWSER_URL", "http://camofox-browser:9377")
+            self.client = _CamofoxClient(
+                base_url=base_url,
+                user_id=os.getenv("CAMOFOX_BROWSER_USER_ID", DEFAULT_USER_ID),
+                timeout=int(os.getenv("CAMOFOX_BROWSER_TIMEOUT", "120")),
             )
+            self.tab_id: Optional[str] = None
+            self.watch_uuid: Optional[str] = None
 
-    def is_ready(self):
-        return bool(self.client.base_url)
+            if proxy_override:
+                logger.warning(
+                    "Per-watch proxy override is not passed through by this plugin yet; "
+                    "configure proxy on the camofox-browser service instead."
+                )
 
-    def get_error(self):
-        return self.error
+        def is_ready(self):
+            return bool(self.client.base_url)
 
-    def get_last_status_code(self):
-        return self.status_code
+        def get_error(self):
+            return self.error
 
-    async def quit(self, watch=None):
-        if self.tab_id:
-            await asyncio.to_thread(self.client.close_tab, self.tab_id)
-            self.tab_id = None
+        def get_last_status_code(self):
+            return self.status_code
 
-    async def screenshot_step(self, step_n=""):
-        super().screenshot_step(step_n=step_n)
-        if not (self.tab_id and self.browser_steps_screenshot_path):
-            return
-        screenshot = await asyncio.to_thread(self.client.screenshot, self.tab_id)
-        destination = os.path.join(self.browser_steps_screenshot_path, f"step_{step_n}.jpeg")
-        with open(destination, "wb") as f:
-            f.write(screenshot)
+        async def quit(self, watch=None):
+            if self.tab_id:
+                await asyncio.to_thread(self.client.close_tab, self.tab_id)
+                self.tab_id = None
 
-    async def save_step_html(self, step_n):
-        super().save_step_html(step_n=step_n)
-        if not (self.tab_id and self.browser_steps_screenshot_path):
-            return
-        html = await asyncio.to_thread(self.client.evaluate, self.tab_id, "document.documentElement.outerHTML")
-        destination = os.path.join(self.browser_steps_screenshot_path, f"step_{step_n}.html")
-        with open(destination, "w", encoding="utf-8") as f:
-            f.write(html or "")
+        async def screenshot_step(self, step_n=""):
+            super().screenshot_step(step_n=step_n)
+            if not (self.tab_id and self.browser_steps_screenshot_path):
+                return
+            screenshot = await asyncio.to_thread(self.client.screenshot, self.tab_id)
+            destination = os.path.join(self.browser_steps_screenshot_path, f"step_{step_n}.jpeg")
+            with open(destination, "wb") as f:
+                f.write(screenshot)
 
-    async def _eval(self, expression: str) -> Any:
-        return await asyncio.to_thread(self.client.evaluate, self.tab_id, expression)
+        async def save_step_html(self, step_n):
+            super().save_step_html(step_n=step_n)
+            if not (self.tab_id and self.browser_steps_screenshot_path):
+                return
+            html = await asyncio.to_thread(self.client.evaluate, self.tab_id, "document.documentElement.outerHTML")
+            destination = os.path.join(self.browser_steps_screenshot_path, f"step_{step_n}.html")
+            with open(destination, "w", encoding="utf-8") as f:
+                f.write(html or "")
 
-    async def _run_browser_steps(self, start_url: str):
-        from changedetectionio.browser_steps.browser_steps import browser_steps_get_valid_steps
-        from changedetectionio.jinja2_custom import render as jinja_render
+        async def _eval(self, expression: str) -> Any:
+            return await asyncio.to_thread(self.client.evaluate, self.tab_id, expression)
 
-        if not self.browser_steps:
-            return
+        async def _run_browser_steps(self, start_url: str):
+            from changedetectionio.browser_steps.browser_steps import browser_steps_get_valid_steps
+            from changedetectionio.jinja2_custom import render as jinja_render
 
-        valid_steps = browser_steps_get_valid_steps(self.browser_steps)
-        for step_n, step in enumerate(valid_steps, start=1):
-            await self.screenshot_step("before-" + str(step_n))
-            await self.save_step_html("before-" + str(step_n))
+            if not self.browser_steps:
+                return
 
-            selector = step.get("selector") or ""
-            value = step.get("optional_value") or ""
-            if ("{%" in selector) or ("{{" in selector):
-                selector = jinja_render(template_str=selector)
-            if ("{%" in value) or ("{{" in value):
-                value = jinja_render(template_str=value)
+            valid_steps = browser_steps_get_valid_steps(self.browser_steps)
+            for step_n, step in enumerate(valid_steps, start=1):
+                await self.screenshot_step("before-" + str(step_n))
+                await self.save_step_html("before-" + str(step_n))
 
-            await self._run_step(step.get("operation"), selector, value, start_url=start_url)
-            await asyncio.to_thread(self.client.wait, self.tab_id, 1500)
+                selector = step.get("selector") or ""
+                value = step.get("optional_value") or ""
+                if ("{%" in selector) or ("{{" in selector):
+                    selector = jinja_render(template_str=selector)
+                if ("{%" in value) or ("{{" in value):
+                    value = jinja_render(template_str=value)
 
-            await self.screenshot_step(str(step_n))
-            await self.save_step_html(str(step_n))
+                await self._run_step(step.get("operation"), selector, value, start_url=start_url)
+                await asyncio.to_thread(self.client.wait, self.tab_id, 1500)
 
-    async def _run_step(self, operation: str, selector: str, value: str, start_url: str):
-        op = re.sub(r"[^0-9a-zA-Z]+", "_", (operation or "").lower()).strip("_")
-        if op in {"", "choose_one"}:
-            return
-        if selector.startswith("/") and not selector.startswith("//"):
-            selector = "xpath=" + selector
+                await self.screenshot_step(str(step_n))
+                await self.save_step_html(str(step_n))
 
-        if op == "goto_site":
-            await asyncio.to_thread(self.client.navigate, self.tab_id, re.sub(r"^source:", "", start_url, flags=re.I))
-        elif op == "goto_url":
-            await asyncio.to_thread(self.client.navigate, self.tab_id, value)
-        elif op in {"wait_for_seconds"}:
-            seconds = float(value.strip()) if value else 1.0
-            await asyncio.to_thread(self.client.wait, self.tab_id, int(seconds * 1000))
-        elif op == "wait_for_text":
-            await self._wait_for_js(f"document.body && document.body.innerText.includes({json.dumps(value)})")
-        elif op == "wait_for_text_in_element":
-            await self._wait_for_js(
-                f"document.querySelector({json.dumps(selector)})?.innerText.includes({json.dumps(value)})"
-            )
-        elif op in {"click_element", "click_element_if_exists"}:
-            if op.endswith("if_exists"):
-                exists = await self._eval(f"!!document.querySelector({json.dumps(selector)})")
-                if not exists:
+        async def _run_step(self, operation: str, selector: str, value: str, start_url: str):
+            op = re.sub(r"[^0-9a-zA-Z]+", "_", (operation or "").lower()).strip("_")
+            if op in {"", "choose_one"}:
+                return
+            if selector.startswith("/") and not selector.startswith("//"):
+                selector = "xpath=" + selector
+
+            if op == "goto_site":
+                await asyncio.to_thread(self.client.navigate, self.tab_id, re.sub(r"^source:", "", start_url, flags=re.I))
+            elif op == "goto_url":
+                await asyncio.to_thread(self.client.navigate, self.tab_id, value)
+            elif op in {"wait_for_seconds"}:
+                seconds = float(value.strip()) if value else 1.0
+                await asyncio.to_thread(self.client.wait, self.tab_id, int(seconds * 1000))
+            elif op == "wait_for_text":
+                await self._wait_for_js(f"document.body && document.body.innerText.includes({json.dumps(value)})")
+            elif op == "wait_for_text_in_element":
+                await self._wait_for_js(
+                    f"document.querySelector({json.dumps(selector)})?.innerText.includes({json.dumps(value)})"
+                )
+            elif op in {"click_element", "click_element_if_exists"}:
+                if op.endswith("if_exists"):
+                    exists = await self._eval(f"!!document.querySelector({json.dumps(selector)})")
+                    if not exists:
+                        return
+                await asyncio.to_thread(self.client.click, self.tab_id, selector)
+            elif op in {"click_element_containing_text", "click_element_containing_text_if_exists"}:
+                expr = """
+                (text) => {
+                  const els = Array.from(document.querySelectorAll('button,a,input,summary,[role=button],div,span,p,li'));
+                  const el = els.find(e => (e.innerText || e.value || '').includes(text));
+                  if (!el) return false;
+                  el.click();
+                  return true;
+                }
+                """
+                found = await self._eval(f"({expr})({json.dumps(value)})")
+                if not found and not op.endswith("if_exists"):
+                    raise RuntimeError(f"No element containing text {value!r}")
+            elif op == "click_x_y":
+                if not re.match(r"^\s?\d+\s?,\s?\d+\s?$", value or ""):
                     return
-            await asyncio.to_thread(self.client.click, self.tab_id, selector)
-        elif op in {"click_element_containing_text", "click_element_containing_text_if_exists"}:
-            expr = """
-            (text) => {
-              const els = Array.from(document.querySelectorAll('button,a,input,summary,[role=button],div,span,p,li'));
-              const el = els.find(e => (e.innerText || e.value || '').includes(text));
-              if (!el) return false;
-              el.click();
-              return true;
-            }
-            """
-            found = await self._eval(f"({expr})({json.dumps(value)})")
-            if not found and not op.endswith("if_exists"):
-                raise RuntimeError(f"No element containing text {value!r}")
-        elif op == "click_x_y":
-            if not re.match(r"^\s?\d+\s?,\s?\d+\s?$", value or ""):
-                return
-            x, y = [int(float(v.strip())) for v in value.split(",", 1)]
-            await self._eval(f"document.elementFromPoint({x}, {y})?.click()")
-        elif op == "enter_text_in_field":
-            await asyncio.to_thread(self.client.type_text, self.tab_id, selector, value)
-        elif op == "press_enter":
-            await asyncio.to_thread(self.client.press, self.tab_id, "Enter")
-        elif op == "scroll_down":
-            await asyncio.to_thread(self.client.scroll, self.tab_id, "down", 700)
-        elif op == "execute_js":
-            await self._eval(value)
-        elif op == "remove_elements":
-            await self._eval(f"document.querySelectorAll({json.dumps(selector)}).forEach(el => el.remove())")
-        elif op == "make_all_child_elements_visible":
-            await self._eval(f"""
-            document.querySelectorAll({json.dumps(selector)} + ' *').forEach(el => {{
-              el.style.display='block'; el.style.visibility='visible'; el.style.opacity='1';
-              el.style.position='relative'; el.style.height='auto'; el.style.width='auto';
-              el.removeAttribute('hidden'); el.classList.remove('hidden', 'd-none');
-            }})
-            """)
-        else:
-            logger.warning(f"Unsupported camofox-browser step {operation!r}; skipping")
+                x, y = [int(float(v.strip())) for v in value.split(",", 1)]
+                await self._eval(f"document.elementFromPoint({x}, {y})?.click()")
+            elif op == "enter_text_in_field":
+                await asyncio.to_thread(self.client.type_text, self.tab_id, selector, value)
+            elif op == "press_enter":
+                await asyncio.to_thread(self.client.press, self.tab_id, "Enter")
+            elif op == "scroll_down":
+                await asyncio.to_thread(self.client.scroll, self.tab_id, "down", 700)
+            elif op == "execute_js":
+                await self._eval(value)
+            elif op == "remove_elements":
+                await self._eval(f"document.querySelectorAll({json.dumps(selector)}).forEach(el => el.remove())")
+            elif op == "make_all_child_elements_visible":
+                await self._eval(f"""
+                document.querySelectorAll({json.dumps(selector)} + ' *').forEach(el => {{
+                  el.style.display='block'; el.style.visibility='visible'; el.style.opacity='1';
+                  el.style.position='relative'; el.style.height='auto'; el.style.width='auto';
+                  el.removeAttribute('hidden'); el.classList.remove('hidden', 'd-none');
+                }})
+                """)
+            else:
+                logger.warning(f"Unsupported camofox-browser step {operation!r}; skipping")
 
-    async def _wait_for_js(self, expression: str, timeout_seconds: int = 30):
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            if await self._eval(expression):
-                return
-            await asyncio.sleep(0.5)
-        raise TimeoutError(f"Timed out waiting for JS expression: {expression}")
+        async def _wait_for_js(self, expression: str, timeout_seconds: int = 30):
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
+                if await self._eval(expression):
+                    return
+                await asyncio.sleep(0.5)
+            raise TimeoutError(f"Timed out waiting for JS expression: {expression}")
 
-    async def run(
-        self,
-        fetch_favicon=True,
-        current_include_filters=None,
-        empty_pages_are_a_change=False,
-        ignore_status_codes=False,
-        is_binary=False,
-        request_body=None,
-        request_headers=None,
-        request_method=None,
-        screenshot_format=None,
-        timeout=None,
-        url=None,
-        watch_uuid=None,
-    ):
-        self.delete_browser_steps_screenshots()
-        self.watch_uuid = watch_uuid
-        session_key = watch_uuid or "manual"
-        self.status_code = 200  # camofox-browser REST does not expose initial navigation HTTP status yet.
+        async def run(
+            self,
+            fetch_favicon=True,
+            current_include_filters=None,
+            empty_pages_are_a_change=False,
+            ignore_status_codes=False,
+            is_binary=False,
+            request_body=None,
+            request_headers=None,
+            request_method=None,
+            screenshot_format=None,
+            timeout=None,
+            url=None,
+            watch_uuid=None,
+        ):
+            self.delete_browser_steps_screenshots()
+            self.watch_uuid = watch_uuid
+            session_key = watch_uuid or "manual"
+            self.status_code = 200  # camofox-browser REST does not expose initial navigation HTTP status yet.
 
-        try:
-            self.tab_id = await asyncio.to_thread(self.client.create_tab, url, session_key)
-            extra_wait = int(os.getenv("WEBDRIVER_DELAY_BEFORE_CONTENT_READY", "5")) + self.render_extract_delay
+            try:
+                self.tab_id = await asyncio.to_thread(self.client.create_tab, url, session_key)
+                extra_wait = int(os.getenv("WEBDRIVER_DELAY_BEFORE_CONTENT_READY", "5")) + self.render_extract_delay
 
-            if self.webdriver_js_execute_code:
-                await self._eval(self.webdriver_js_execute_code)
+                if self.webdriver_js_execute_code:
+                    await self._eval(self.webdriver_js_execute_code)
 
-            await asyncio.to_thread(self.client.wait, self.tab_id, extra_wait * 1000)
-            await self._run_browser_steps(start_url=url)
-            if self.browser_steps:
                 await asyncio.to_thread(self.client.wait, self.tab_id, extra_wait * 1000)
+                await self._run_browser_steps(start_url=url)
+                if self.browser_steps:
+                    await asyncio.to_thread(self.client.wait, self.tab_id, extra_wait * 1000)
 
-            content = await self._eval("document.documentElement.outerHTML")
-            if not empty_pages_are_a_change and not (content or "").strip():
-                raise EmptyReply(url=url, status_code=self.status_code)
+                content = await self._eval("document.documentElement.outerHTML")
+                if not empty_pages_are_a_change and not (content or "").strip():
+                    raise EmptyReply(url=url, status_code=self.status_code)
 
-            if fetch_favicon:
-                try:
-                    self.favicon_blob = await self._eval(FAVICON_FETCHER_JS)
-                except Exception as e:
-                    logger.debug(f"Camofox favicon fetch failed, continuing: {e}")
+                if fetch_favicon:
+                    try:
+                        self.favicon_blob = await self._eval(FAVICON_FETCHER_JS)
+                    except Exception as e:
+                        logger.debug(f"Camofox favicon fetch failed, continuing: {e}")
 
-            await self._eval("var include_filters=" + json.dumps(current_include_filters or ""))
-            xpath_options = {
-                "visualselector_xpath_selectors": visualselector_xpath_selectors,
-                "max_height": int(os.getenv("SCREENSHOT_MAX_HEIGHT", SCREENSHOT_MAX_HEIGHT_DEFAULT)),
-            }
-            self.xpath_data = await self._eval(f"({XPATH_ELEMENT_JS})({json.dumps(xpath_options)})")
-            self.instock_data = await self._eval(f"({INSTOCK_DATA_JS})()")
-            self.content = content
-            self.screenshot = await asyncio.to_thread(self.client.screenshot, self.tab_id)
+                await self._eval("var include_filters=" + json.dumps(current_include_filters or ""))
+                xpath_options = {
+                    "visualselector_xpath_selectors": visualselector_xpath_selectors,
+                    "max_height": int(os.getenv("SCREENSHOT_MAX_HEIGHT", SCREENSHOT_MAX_HEIGHT_DEFAULT)),
+                }
+                self.xpath_data = await self._eval(f"({XPATH_ELEMENT_JS})({json.dumps(xpath_options)})")
+                self.instock_data = await self._eval(f"({INSTOCK_DATA_JS})()")
+                self.content = content
+                self.screenshot = await asyncio.to_thread(self.client.screenshot, self.tab_id)
 
-        except Exception as e:
-            self.error = str(e)
-            raise PageUnloadable(url=url, status_code=self.status_code, message=str(e)) from e
-        finally:
-            await self.quit()
+            except Exception as e:
+                self.error = str(e)
+                raise PageUnloadable(url=url, status_code=self.status_code, message=str(e)) from e
+            finally:
+                await self.quit()
+
+    return CamofoxBrowserFetcher
