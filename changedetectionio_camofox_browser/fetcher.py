@@ -17,6 +17,13 @@ FETCHER_NAME = "extra_browser_camofox_browser"
 DEFAULT_USER_ID = os.getenv("CAMOFOX_BROWSER_USER_ID", "changedetectionio")
 
 
+def _env_truthy(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
 @hookimpl
 def register_content_fetcher():
     """Register a changedetection.io fetcher backed by jo-inc/camofox-browser.
@@ -321,15 +328,21 @@ def _build_fetcher_class():
                     except Exception as e:
                         logger.debug(f"Camofox favicon fetch failed, continuing: {e}")
 
-                await self._eval("var include_filters=" + json.dumps(current_include_filters or ""))
-                xpath_options = {
-                    "visualselector_xpath_selectors": visualselector_xpath_selectors,
-                    "max_height": int(os.getenv("SCREENSHOT_MAX_HEIGHT", SCREENSHOT_MAX_HEIGHT_DEFAULT)),
-                }
-                self.xpath_data = await self._eval(f"({XPATH_ELEMENT_JS})({json.dumps(xpath_options)})")
-                self.instock_data = await self._eval(f"({INSTOCK_DATA_JS})()")
                 self.content = content
-                self.screenshot = await asyncio.to_thread(self.client.screenshot, self.tab_id)
+
+                if _env_truthy("CAMOFOX_BROWSER_CAPTURE_XPATH", default=False):
+                    await self._eval("var include_filters=" + json.dumps(current_include_filters or ""))
+                    xpath_options = {
+                        "visualselector_xpath_selectors": visualselector_xpath_selectors,
+                        "max_height": int(os.getenv("SCREENSHOT_MAX_HEIGHT", SCREENSHOT_MAX_HEIGHT_DEFAULT)),
+                    }
+                    self.xpath_data = await self._eval(f"({XPATH_ELEMENT_JS})({json.dumps(xpath_options)})")
+
+                if _env_truthy("CAMOFOX_BROWSER_CAPTURE_INSTOCK", default=False):
+                    self.instock_data = await self._eval(f"({INSTOCK_DATA_JS})()")
+
+                if _env_truthy("CAMOFOX_BROWSER_CAPTURE_SCREENSHOT", default=False):
+                    self.screenshot = await asyncio.to_thread(self.client.screenshot, self.tab_id)
 
             except Exception as e:
                 self.error = str(e)

@@ -122,6 +122,9 @@ Known limitations:
 | `CAMOFOX_BROWSER_URL` | `http://camofox-browser:9377` | Base URL for the REST browser service |
 | `CAMOFOX_BROWSER_USER_ID` | `changedetectionio` | camofox-browser user/session namespace |
 | `CAMOFOX_BROWSER_TIMEOUT` | `120` | HTTP timeout in seconds |
+| `CAMOFOX_BROWSER_CAPTURE_XPATH` | `false` | Capture changedetection visual-selector metadata; keep off for price watches |
+| `CAMOFOX_BROWSER_CAPTURE_INSTOCK` | `false` | Run changedetection's generic in-stock extractor; keep off when watch JS emits availability |
+| `CAMOFOX_BROWSER_CAPTURE_SCREENSHOT` | `false` | Capture final screenshot; keep off for faster price watches |
 | `WEBDRIVER_DELAY_BEFORE_CONTENT_READY` | `5` | Reused changedetection delay before capture |
 
 ## Research notes
