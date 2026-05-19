@@ -69,6 +69,25 @@ For a low-maintenance deployment:
 
 This keeps the operational surface to normal Docker image updates instead of a custom changedetection image rebuild.
 
+## Test result on Alex's failing Amazon watches
+
+The plugin was installed into the running `changedetection` container and tested against the six watches whose latest snapshots were `Amazon Sign-In` with blank prices.
+
+Result: the underlying `camofox-browser` REST service loaded all six Amazon product pages and extracted non-empty prices when the existing Amazon interstitial step was guarded first.
+
+Root cause found during testing: the old browser step blindly clicked any element matching `/Doorgaan met winkelen|Continue shopping|Verder|Continue/`. On real product pages that can navigate to Amazon Sign-In. The safe first step is:
+
+```js
+(() => {
+  if (document.querySelector('#productTitle,#corePrice_feature_div,.a-price .a-offscreen')) return 'already product page';
+  const candidates = Array.from(document.querySelectorAll('button,input[type=submit],a')).filter(el => /Doorgaan met winkelen|Continue shopping|Verder|Continue/i.test((el.innerText || el.value || el.getAttribute('alt') || '').trim()));
+  if (candidates[0]) { candidates[0].click(); return 'clicked interstitial'; }
+  const f = document.querySelector('form[action*="validateCaptcha"]');
+  if (f) { f.submit(); return 'submitted interstitial'; }
+  return 'no interstitial';
+})()
+```
+
 ## Current feature coverage
 
 Implemented fetcher: `extra_browser_camofox_browser`
