@@ -1,0 +1,20 @@
+services:
+  changedetection:
+    image: ghcr.io/dgtlmoon/changedetection.io:latest
+    container_name: changedetection
+    restart: unless-stopped
+    volumes:
+      - ./datastore:/datastore
+    environment:
+      - EXTRA_PACKAGES=--upgrade changedetection.io-camofox-browser
+      - CAMOFOX_BROWSER_URL=http://camofox-browser:9377
+      - WEBDRIVER_DELAY_BEFORE_CONTENT_READY=5
+    depends_on:
+      - camofox-browser
+
+  camofox-browser:
+    image: ghcr.io/jo-inc/camofox-browser:latest
+    container_name: camofox-browser
+    restart: unless-stopped
+    environment:
+      - CAMOFOX_PORT=9377
