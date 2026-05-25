@@ -37,6 +37,10 @@ services:
     environment:
       - EXTRA_PACKAGES=--upgrade changedetection.io-camofox-browser
       - CAMOFOX_BROWSER_URL=http://camofox-browser:9377
+      # Optional: required when camofox-browser runs with CAMOFOX_API_KEY.
+      # Prefer a changedetection-local env var name so the browser service key
+      # is not confused with changedetection.io's own API key.
+      - CAMOFOX_BROWSER_API_KEY=${CAMOFOX_BROWSER_API_KEY}
       - WEBDRIVER_DELAY_BEFORE_CONTENT_READY=5
     depends_on:
       - camofox-browser
@@ -120,6 +124,7 @@ Known limitations:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CAMOFOX_BROWSER_URL` | `http://camofox-browser:9377` | Base URL for the REST browser service |
+| `CAMOFOX_BROWSER_API_KEY` | unset | Bearer token for protected camofox-browser routes such as `/tabs/:id/evaluate`; falls back to `CAMOFOX_API_KEY` if set |
 | `CAMOFOX_BROWSER_USER_ID` | `changedetectionio` | camofox-browser user/session namespace |
 | `CAMOFOX_BROWSER_TIMEOUT` | `120` | HTTP timeout in seconds |
 | `CAMOFOX_BROWSER_CAPTURE_XPATH` | `false` | Capture changedetection visual-selector metadata; keep off for price watches |

@@ -47,10 +47,25 @@ class _Response:
 
 
 class _CamofoxClient:
-    def __init__(self, base_url: str, user_id: str = DEFAULT_USER_ID, timeout: int = 120):
+    def __init__(
+        self,
+        base_url: str,
+        user_id: str = DEFAULT_USER_ID,
+        timeout: int = 120,
+        api_key: str | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.user_id = user_id
         self.timeout = timeout
+        self.api_key = (api_key or "").strip()
+
+    def _headers(self, has_payload: bool) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if has_payload:
+            headers["Content-Type"] = "application/json"
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
     def _request(self, method: str, path: str, payload: Optional[dict[str, Any]] = None) -> _Response:
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -58,7 +73,7 @@ class _CamofoxClient:
             self.base_url + path,
             data=data,
             method=method,
-            headers={"Content-Type": "application/json"} if payload is not None else {},
+            headers=self._headers(payload is not None),
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -143,6 +158,7 @@ def _build_fetcher_class():
                 base_url=base_url,
                 user_id=os.getenv("CAMOFOX_BROWSER_USER_ID", DEFAULT_USER_ID),
                 timeout=int(os.getenv("CAMOFOX_BROWSER_TIMEOUT", "120")),
+                api_key=os.getenv("CAMOFOX_BROWSER_API_KEY") or os.getenv("CAMOFOX_API_KEY"),
             )
             self.tab_id: Optional[str] = None
             self.watch_uuid: Optional[str] = None
