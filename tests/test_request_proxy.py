@@ -46,20 +46,51 @@ class CamofoxClientRequestProxyTests(unittest.TestCase):
 
     def test_proxy_override_url_is_converted_to_request_proxy(self):
         self.assertEqual(
-            _proxy_override_to_request_proxy("http://user:secret@gw.dataimpulse.com:10000"),
-            {"server": "http://gw.dataimpulse.com:10000", "username": "user", "password": "secret"},
+            _proxy_override_to_request_proxy("http://user:%70%77@gw.dataimpulse.com:10000"),
+            {"server": "http://gw.dataimpulse.com:10000", "username": "user", "password": "pw"},
         )
 
-    @patch.dict("os.environ", {"CAMOFOX_BROWSER_REQUEST_PROXY": "http://user:secret@gw.dataimpulse.com:10000"}, clear=False)
-    def test_fallback_request_proxy_is_used_for_hard_domains(self):
+    @patch.dict(
+        "os.environ",
+        {
+            "CAMOFOX_BROWSER_REQUEST_PROXY": "http://user:%70%77@gw.dataimpulse.com:10000",
+            "CAMOFOX_BROWSER_REQUEST_PROXY_WATCH_UUIDS": "7ee5d178-ff9b-471a-bb56-61b7c6c955fa,95ab0402-c991-43ed-adc8-9517eb2a8e82",
+        },
+        clear=False,
+    )
+    def test_fallback_request_proxy_is_used_for_allowlisted_watch_uuid(self):
         self.assertEqual(
-            _fallback_request_proxy_for_url("https://www.bol.com/nl/nl/p/example/123/"),
-            {"server": "http://gw.dataimpulse.com:10000", "username": "user", "password": "secret"},
+            _fallback_request_proxy_for_url(
+                "https://www.bol.com/nl/nl/p/example/123/",
+                watch_uuid="7ee5d178-ff9b-471a-bb56-61b7c6c955fa",
+            ),
+            {"server": "http://gw.dataimpulse.com:10000", "username": "user", "password": "pw"},
         )
 
-    @patch.dict("os.environ", {"CAMOFOX_BROWSER_REQUEST_PROXY": "http://user:secret@gw.dataimpulse.com:10000"}, clear=False)
-    def test_fallback_request_proxy_is_not_used_for_generic_domains(self):
-        self.assertIsNone(_fallback_request_proxy_for_url("https://example.com/product"))
+    @patch.dict(
+        "os.environ",
+        {
+            "CAMOFOX_BROWSER_REQUEST_PROXY": "http://user:%70%77@gw.dataimpulse.com:10000",
+            "CAMOFOX_BROWSER_REQUEST_PROXY_WATCH_UUIDS": "7ee5d178-ff9b-471a-bb56-61b7c6c955fa",
+        },
+        clear=False,
+    )
+    def test_fallback_request_proxy_is_not_used_for_unlisted_hard_domain(self):
+        self.assertIsNone(
+            _fallback_request_proxy_for_url(
+                "https://www.amazon.nl/dp/example",
+                watch_uuid="0786f84d-37f4-4f08-8c22-f42922a44c23",
+            )
+        )
+
+    @patch.dict("os.environ", {"CAMOFOX_BROWSER_REQUEST_PROXY": "http://user:%70%77@gw.dataimpulse.com:10000"}, clear=False)
+    def test_fallback_request_proxy_is_not_used_without_allowlist(self):
+        self.assertIsNone(
+            _fallback_request_proxy_for_url(
+                "https://www.bol.com/nl/nl/p/example/123/",
+                watch_uuid="7ee5d178-ff9b-471a-bb56-61b7c6c955fa",
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -59,10 +59,14 @@ def _proxy_scoped_user_id(base_user_id: str, request_proxy: dict[str, str] | Non
     return f"{base_user_id}-proxy-{suffix}"
 
 
-def _fallback_request_proxy_for_url(url: str | None) -> dict[str, str] | None:
-    host = (urllib.parse.urlsplit(url or "").hostname or "").lower()
-    hard_domain = host.endswith("bol.com") or "amazon." in host or "idventure-shop" in host
-    if not hard_domain:
+def _request_proxy_watch_uuids() -> set[str]:
+    raw_uuids = os.getenv("CAMOFOX_BROWSER_REQUEST_PROXY_WATCH_UUIDS", "")
+    return {raw_uuid.strip().lower() for raw_uuid in raw_uuids.split(",") if raw_uuid.strip()}
+
+
+def _fallback_request_proxy_for_url(url: str | None, watch_uuid: str | None = None) -> dict[str, str] | None:
+    allowed_uuids = _request_proxy_watch_uuids()
+    if not (watch_uuid and watch_uuid.lower() in allowed_uuids):
         return None
     proxy_url = os.getenv("CAMOFOX_BROWSER_REQUEST_PROXY") or os.getenv("DATAIMPULSE_PROXY") or ""
     return _proxy_override_to_request_proxy(proxy_url)
@@ -368,7 +372,7 @@ def _build_fetcher_class():
             self.status_code = 200  # camofox-browser REST does not expose initial navigation HTTP status yet.
 
             try:
-                request_proxy = self.request_proxy or _fallback_request_proxy_for_url(url)
+                request_proxy = self.request_proxy or _fallback_request_proxy_for_url(url, watch_uuid=watch_uuid)
                 self.client.user_id = _proxy_scoped_user_id(self.base_user_id, request_proxy)
                 self.tab_id = await asyncio.to_thread(self.client.create_tab, url or "", session_key, request_proxy)
                 extra_wait = int(os.getenv("WEBDRIVER_DELAY_BEFORE_CONTENT_READY", "5")) + self.render_extract_delay
