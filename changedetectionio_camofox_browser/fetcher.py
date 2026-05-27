@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,49 @@ def _env_truthy(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _proxy_override_to_request_proxy(proxy_override) -> dict[str, str] | None:
+    if not proxy_override:
+        return None
+    if isinstance(proxy_override, dict):
+        if "server" in proxy_override:
+            server = str(proxy_override.get("server") or "").strip()
+            username = str(proxy_override.get("username") or "").strip()
+            password = str(proxy_override.get("password") or "").strip()
+            return {"server": server, "username": username, "password": password} if server else None
+        proxy_url = proxy_override.get("https") or proxy_override.get("http") or proxy_override.get("all")
+    else:
+        proxy_url = str(proxy_override).strip()
+    if not proxy_url:
+        return None
+    parsed = urllib.parse.urlsplit(str(proxy_url))
+    if not (parsed.scheme and parsed.hostname):
+        return None
+    netloc = parsed.hostname
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    server = urllib.parse.urlunsplit((parsed.scheme, netloc, "", "", ""))
+    username = urllib.parse.unquote(parsed.username or "")
+    password = urllib.parse.unquote(parsed.password or "")
+    return {"server": server, "username": username, "password": password}
+
+
+def _proxy_scoped_user_id(base_user_id: str, request_proxy: dict[str, str] | None) -> str:
+    if not request_proxy:
+        return base_user_id
+    fingerprint = json.dumps(request_proxy, sort_keys=True, separators=(",", ":"))
+    suffix = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:12]
+    return f"{base_user_id}-proxy-{suffix}"
+
+
+def _fallback_request_proxy_for_url(url: str | None) -> dict[str, str] | None:
+    host = (urllib.parse.urlsplit(url or "").hostname or "").lower()
+    hard_domain = host.endswith("bol.com") or "amazon." in host or "idventure-shop" in host
+    if not hard_domain:
+        return None
+    proxy_url = os.getenv("CAMOFOX_BROWSER_REQUEST_PROXY") or os.getenv("DATAIMPULSE_PROXY") or ""
+    return _proxy_override_to_request_proxy(proxy_url)
 
 
 @hookimpl
@@ -88,8 +132,10 @@ class _CamofoxClient:
         except urllib.error.URLError as e:
             raise RuntimeError(f"Could not reach camofox-browser at {self.base_url}: {e}") from e
 
-    def create_tab(self, url: str, session_key: str) -> str:
-        payload = {"userId": self.user_id, "sessionKey": session_key, "url": url}
+    def create_tab(self, url: str, session_key: str, proxy: dict[str, str] | None = None) -> str:
+        payload: dict[str, Any] = {"userId": self.user_id, "sessionKey": session_key, "url": url}
+        if proxy:
+            payload["proxy"] = proxy
         response = self._request("POST", "/tabs", payload).json()
         tab_id = response.get("tabId")
         if not tab_id:
@@ -154,20 +200,19 @@ def _build_fetcher_class():
         def __init__(self, proxy_override=None, custom_browser_connection_url=None, **kwargs):
             super().__init__(**kwargs)
             base_url = custom_browser_connection_url or os.getenv("CAMOFOX_BROWSER_URL", "http://camofox-browser:9377")
+            self.request_proxy = _proxy_override_to_request_proxy(proxy_override)
+            self.base_user_id = os.getenv("CAMOFOX_BROWSER_USER_ID", DEFAULT_USER_ID)
             self.client = _CamofoxClient(
                 base_url=base_url,
-                user_id=os.getenv("CAMOFOX_BROWSER_USER_ID", DEFAULT_USER_ID),
+                user_id=_proxy_scoped_user_id(self.base_user_id, self.request_proxy),
                 timeout=int(os.getenv("CAMOFOX_BROWSER_TIMEOUT", "120")),
                 api_key=os.getenv("CAMOFOX_BROWSER_API_KEY") or os.getenv("CAMOFOX_API_KEY"),
             )
             self.tab_id: Optional[str] = None
             self.watch_uuid: Optional[str] = None
 
-            if proxy_override:
-                logger.warning(
-                    "Per-watch proxy override is not passed through by this plugin yet; "
-                    "configure proxy on the camofox-browser service instead."
-                )
+            if proxy_override and not self.request_proxy:
+                logger.warning("Could not convert changedetection proxy override for camofox-browser request proxy")
 
         def is_ready(self):
             return bool(self.client.base_url)
@@ -323,7 +368,9 @@ def _build_fetcher_class():
             self.status_code = 200  # camofox-browser REST does not expose initial navigation HTTP status yet.
 
             try:
-                self.tab_id = await asyncio.to_thread(self.client.create_tab, url, session_key)
+                request_proxy = self.request_proxy or _fallback_request_proxy_for_url(url)
+                self.client.user_id = _proxy_scoped_user_id(self.base_user_id, request_proxy)
+                self.tab_id = await asyncio.to_thread(self.client.create_tab, url or "", session_key, request_proxy)
                 extra_wait = int(os.getenv("WEBDRIVER_DELAY_BEFORE_CONTENT_READY", "5")) + self.render_extract_delay
 
                 if self.webdriver_js_execute_code:
