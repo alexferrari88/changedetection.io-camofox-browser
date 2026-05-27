@@ -64,12 +64,26 @@ def _request_proxy_watch_uuids() -> set[str]:
     return {raw_uuid.strip().lower() for raw_uuid in raw_uuids.split(",") if raw_uuid.strip()}
 
 
-def _fallback_request_proxy_for_url(url: str | None, watch_uuid: str | None = None) -> dict[str, str] | None:
+def _watch_uuid_allows_request_proxy(watch_uuid: str | None) -> bool:
     allowed_uuids = _request_proxy_watch_uuids()
-    if not (watch_uuid and watch_uuid.lower() in allowed_uuids):
+    return bool(watch_uuid and watch_uuid.lower() in allowed_uuids)
+
+
+def _fallback_request_proxy_for_url(url: str | None, watch_uuid: str | None = None) -> dict[str, str] | None:
+    if not _watch_uuid_allows_request_proxy(watch_uuid):
         return None
     proxy_url = os.getenv("CAMOFOX_BROWSER_REQUEST_PROXY") or os.getenv("DATAIMPULSE_PROXY") or ""
     return _proxy_override_to_request_proxy(proxy_url)
+
+
+def _request_proxy_for_watch(
+    proxy_override,
+    url: str | None,
+    watch_uuid: str | None = None,
+) -> dict[str, str] | None:
+    if not _watch_uuid_allows_request_proxy(watch_uuid):
+        return None
+    return _proxy_override_to_request_proxy(proxy_override) or _fallback_request_proxy_for_url(url, watch_uuid=watch_uuid)
 
 
 @hookimpl
@@ -204,6 +218,7 @@ def _build_fetcher_class():
         def __init__(self, proxy_override=None, custom_browser_connection_url=None, **kwargs):
             super().__init__(**kwargs)
             base_url = custom_browser_connection_url or os.getenv("CAMOFOX_BROWSER_URL", "http://camofox-browser:9377")
+            self.proxy_override = proxy_override
             self.request_proxy = _proxy_override_to_request_proxy(proxy_override)
             self.base_user_id = os.getenv("CAMOFOX_BROWSER_USER_ID", DEFAULT_USER_ID)
             self.client = _CamofoxClient(
@@ -372,7 +387,7 @@ def _build_fetcher_class():
             self.status_code = 200  # camofox-browser REST does not expose initial navigation HTTP status yet.
 
             try:
-                request_proxy = self.request_proxy or _fallback_request_proxy_for_url(url, watch_uuid=watch_uuid)
+                request_proxy = _request_proxy_for_watch(self.proxy_override, url, watch_uuid=watch_uuid)
                 self.client.user_id = _proxy_scoped_user_id(self.base_user_id, request_proxy)
                 self.tab_id = await asyncio.to_thread(self.client.create_tab, url or "", session_key, request_proxy)
                 extra_wait = int(os.getenv("WEBDRIVER_DELAY_BEFORE_CONTENT_READY", "5")) + self.render_extract_delay

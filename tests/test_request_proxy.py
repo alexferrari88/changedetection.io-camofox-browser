@@ -18,6 +18,7 @@ from changedetectionio_camofox_browser.fetcher import (
     _CamofoxClient,
     _fallback_request_proxy_for_url,
     _proxy_override_to_request_proxy,
+    _request_proxy_for_watch,
 )
 
 
@@ -90,6 +91,38 @@ class CamofoxClientRequestProxyTests(unittest.TestCase):
                 "https://www.bol.com/nl/nl/p/example/123/",
                 watch_uuid="7ee5d178-ff9b-471a-bb56-61b7c6c955fa",
             )
+        )
+    @patch.dict(
+        "os.environ",
+        {
+            "CAMOFOX_BROWSER_REQUEST_PROXY_WATCH_UUIDS": "7ee5d178-ff9b-471a-bb56-61b7c6c955fa",
+        },
+        clear=False,
+    )
+    def test_proxy_override_is_ignored_for_unlisted_watch_uuid(self):
+        self.assertIsNone(
+            _request_proxy_for_watch(
+                proxy_override="http://user:%70%77@gw.dataimpulse.com:10000",
+                url="https://www.amazon.nl/dp/example",
+                watch_uuid="0786f84d-37f4-4f08-8c22-f42922a44c23",
+            )
+        )
+
+    @patch.dict(
+        "os.environ",
+        {
+            "CAMOFOX_BROWSER_REQUEST_PROXY_WATCH_UUIDS": "7ee5d178-ff9b-471a-bb56-61b7c6c955fa",
+        },
+        clear=False,
+    )
+    def test_proxy_override_is_used_for_allowlisted_watch_uuid(self):
+        self.assertEqual(
+            _request_proxy_for_watch(
+                proxy_override="http://user:%70%77@gw.dataimpulse.com:10000",
+                url="https://www.bol.com/nl/nl/p/example/123/",
+                watch_uuid="7ee5d178-ff9b-471a-bb56-61b7c6c955fa",
+            ),
+            {"server": "http://gw.dataimpulse.com:10000", "username": "user", "password": "pw"},
         )
 
 
